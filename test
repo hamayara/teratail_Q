@@ -1,0 +1,701 @@
+import PySimpleGUI as sg
+import tkinter as tk
+from tkinter import filedialog
+
+import glob
+import cv2
+import numpy as np
+import os
+import shutil
+from PIL import Image
+import time
+import math
+
+path = os.getcwd()
+gazousyori_file=path+"/画像処理用"
+if not os.path.exists(gazousyori_file):
+         # ディレクトリが存在しない場合、ディレクトリを作成する
+         os.makedirs(gazousyori_file)
+# 画像読込
+# cv2.imread()は日本語パスに対応していないのでその対策
+#ファイルパスをnpで読み込んでcv2用のパスに変換する
+def imread(filename, flags=cv2.IMREAD_UNCHANGED, dtype=np.uint8):
+    try:
+        n = np.fromfile(filename, dtype)
+        img = cv2.imdecode(n, flags)
+        return img
+    except Exception as e:
+        print(e)
+        return None
+
+# 画像保存(cv2→Pillow)
+def imwrite(img,output_path):
+    try:
+        
+       # カラー画像のときは、BGRからRGBへ変換する
+       if img.shape[2] == 3:
+         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+       elif img.shape[2] == 4:  # 透過
+         img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
+
+       # NumPyからPillowへ変換
+       pil_image = Image.fromarray(img)
+       # Pillowで画像ファイルへ保存
+       pil_image.save(output_path)
+
+    except Exception as e:
+        print(e)
+        return None
+
+
+# 画像を表示（sg.Graph インスタンスメソッド）
+def draw_image_plus(self, img, location=(0,0)):
+    if type(img) == np.ndarray:
+        img = cv2.imencode('.png', img)[1].tobytes()
+    id_ = self.draw_image(data=img, location=location)
+    return id_
+sg.Graph.draw_image_plus = draw_image_plus
+
+def gazou_open(event,key1,key2,fullpath_list,trim_areas):#（イベント、ボタンのキー、表示する画面のキー、表示する画像リスト）
+     if key1 in event:
+        source_dir = tk.filedialog.askdirectory().replace('[', '[[]').replace(']', '[]]').replace('[[[]]', '[[]')
+        if source_dir:
+            trim_areas = {}
+        # ファイル一覧を取得
+            fullpath_list = glob.glob('{}/*.png'.format(source_dir)) \
+                + glob.glob('{}/*.jpg'.format(source_dir)) \
+                + glob.glob('{}/*.jpeg'.format(source_dir)) \
+                + glob.glob('{}/*.bmp'.format(source_dir)) \
+                + glob.glob('{}/*.gif'.format(source_dir)) 
+            fullpath_list.sort()
+            fullpath_list = [s.replace('\\', '/') for s in fullpath_list]
+            if fullpath_list:
+                select_rows=[0]
+            else:
+                select_rows=[]
+        # ファイル一覧更新
+            window[key2].update([[s.split('/')[-1]] for s in fullpath_list], select_rows=select_rows)
+
+     return fullpath_list,trim_areas
+
+
+# 縦横比選択欄の表示切替
+def ASPECT(event,key1,key2,key3):#（イベント、ボタンのキー、表示する画面のキー、表示する画像リスト、表示の切り替えをするキー、スクロールに反応するキー、保存する場所（1＝画像A、２＝画像B））
+  # 縦横比選択
+    if event == key1:
+        if values[key1] == '指定比率': #指定比率を選んだら欄が非表示から表示に変わる
+            aspect_visible = True
+        else:
+            aspect_visible = False
+        window[key3].update(aspect_visible)
+
+
+
+# 選択スクロールで画像切り替え
+class DraggableImage:
+    """画像をマウスで拡大することができるクラスを定義します"""
+
+    def __init__(self, event,canvas,ASPECT_MODE,file_key,fullpath_list, CANVAS,TABLE,key="A",
+    drag_from=None,current=None,selection=None,img_area_limit=None,current_is_key=None,
+    current_fullpath=None,trim_areas={},image_scale=None,img_update=False,img_trim=None,selection_figure=None):#key3は数字を記入
+        #使用するデータ関連
+        self.canvas = canvas # 操作するキャンバス
+        self.fullpath_list = fullpath_list# キャンバスに表示する画像のリスト()
+        self.current_fullpath=current_fullpath# キャンバスに表示する画像のパス
+        self.event = event # ウインドウズ中の操作イベント
+
+        self.canvas.drag_from=(drag_from)#マウスを左クリックした座標
+        self.canvas.current=(current)#ドラッグしながらマウスを動かした座標
+        self.canvas.selection=selection#四角で囲む範囲
+        self.img_area_limit=img_area_limit#表示限界範囲
+
+
+        self.current_is_key=current_is_key#選択範囲の更新
+        self.img_update=img_update#キャンバスの画像更新用
+
+        self.trim_areas=trim_areas#トリミングする範囲
+        self.image_scale=image_scale#画像のサイズ
+        self.img_trim =img_trim#キャンバスに表示する画像
+        self.canvas.selection_figure=selection_figure#赤い四角を描画する範囲
+
+        #ウインドウズのキー用
+        self.CANVAS=CANVAS # キャンバスのキー
+        self.TABLE_SOURCE=TABLE#ファイル名を表示するキャンバスのキー
+
+        #ウインドウズのボタンキー用
+        self.file_key = file_key #ファイル選択ボタンのキー
+        self.ASPECT_MODE=ASPECT_MODE #ASPECT_MODEボタンのキー
+        self.ENABLE_ASPECT="ENABLE_ASPECT_"+str(key)#アスペクト比入手用のキー
+        self.ASPECT_X="ASPECT_X_"+str(key)
+        self.ASPECT_X="ASPECT_X_"+str(key)
+        self.COLUMN_ASPECT="COLUMN_ASPECT_"+str(key)
+        self.resize='CANVAS_RESIZE_'+str(key)
+
+
+        #操作するボタンキー用
+        self.SCROLL =CANVAS+'__SCROLL'
+        self.LEFT_PRESS =CANVAS+'__LEFT_PRESS'
+        self.LEFT_DRAG =CANVAS+'__DRAG'
+        self.cancel=CANVAS+'__DRAG_CANCEL'
+        self.rectangle=CANVAS+'__LEFT_RELEASE'
+        self.rec_cancel=CANVAS+'__DOUBLE_LEFT'
+        
+ 
+        #マウス操作に関数を繋げる
+        self.canvas.bind('<MouseWheel>', '__SCROLL') # スクロール操作を設定(マウスホイール)
+        self.canvas.bind('<ButtonPress-1>', '__LEFT_PRESS') # 範囲指定開始(左クリック)
+        self.canvas.bind('<Button1-Motion>', '__DRAG') #範囲選択(ドラッグ)
+        self.canvas.bind('<Button1-ButtonPress-3>', '__DRAG_CANCEL') # 範囲選択中止（ドラッグ中に右クリック）
+        self.canvas.bind('<ButtonRelease-1>', '__LEFT_RELEASE') # ドラッグ範囲確定（ボタンを離す）
+        self.canvas.bind('<Double-ButtonPress-1>', '__DOUBLE_LEFT') # 選択範囲解除（左をダブルクリック）
+
+
+
+
+    # 一連の流れを纏める
+    def IMAGE_ZOOM(self):
+
+
+        # フォルダを開く
+        self.fullpath_list,self.trim_areas=gazou_open(self.event,self.file_key,self.TABLE_SOURCE,self.fullpath_list,self.trim_areas)
+
+    
+        # 縦横比選択
+        ASPECT(self.event,self.ASPECT_MODE,self.TABLE_SOURCE,self.COLUMN_ASPECT)
+
+        # 選択スクロール
+        if self.event == self.SCROLL and values[self.TABLE_SOURCE]:
+            row = values[self.TABLE_SOURCE][0]
+            item_len = len(self.fullpath_list)
+            if self.canvas.user_bind_event.delta > 0 and row > 0:
+                row -= 1
+            elif self.canvas.user_bind_event.delta < 0 and row < item_len - 1:
+                row += 1
+            window[self.TABLE_SOURCE].update(
+                [[s.split('/')[-1]] for s in self.fullpath_list], 
+                select_rows=[row], 
+            )
+        
+            # スクロール外の要素を選択しても融通はきかないので自分で動かす必要あり
+            # スクロール位置を0~1で指定
+            window[self.TABLE_SOURCE].set_vscroll_position(row/item_len)
+    
+        # 選択中の画像があれば処理
+        if values[self.TABLE_SOURCE]:
+
+            self.current_fullpath = self.fullpath_list[values[self.TABLE_SOURCE][0]]
+        # アス比取得
+            if values[self.ENABLE_ASPECT]:
+                if ':' in values[self.ASPECT_MODE]:
+                    (x, y) = values[self.ASPECT_MODE].split(':')
+                    aspect = np.array((
+                        int(x), 
+                        int(y), 
+                    ))
+                elif values[self.ASPECT_MODE] == '指定比率':
+                    try:
+                        aspect = np.array((int(values[self.ASPECT_X]), int(values[self.ASPECT_Y])))
+                    except ValueError:
+                        aspect = None
+            # get_size()で表示エリアサイズを測定
+                elif values[self.ASPECT_MODE] == '画面サイズ':
+                    aspect = None
+            else:
+                aspect = None
+            # 矩形選択開始
+            if event == self.LEFT_PRESS:
+                self.canvas.drag_from = np.array((self.canvas.user_bind_event.x, self.canvas.user_bind_event.y))# 左クリックした座標
+                self.canvas.current = np.array((self.canvas.user_bind_event.x, self.canvas.user_bind_event.y))# ドラッグ後の座標
+
+            # ドラッグ処理
+            if event == self.LEFT_DRAG  and self.canvas.drag_from is not None:
+                
+                self.canvas.current = np.array((self.canvas.user_bind_event.x, self.canvas.user_bind_event.y))
+                self.canvas.selection = np.array((self.canvas.drag_from, self.canvas.current))
+                self.canvas.selection = np.array((self.canvas.selection.min(axis=0), self.canvas.selection.max(axis=0))) # ((左上), (右下))の順に並び替える
+
+            # アスペクト比の適用
+                
+                if aspect is not None:
+                    selection_size = (self.canvas.selection[1] - self.canvas.selection[0])
+                    aspected = (aspect[0]/aspect[1]*selection_size[1], aspect[1]/aspect[0]*selection_size[0]) + self.canvas.selection[0]
+                    self.canvas.selection = np.vstack([self.canvas.selection, [aspected]]) # アス比適応時と合体させる
+                self.canvas.selection = np.array((self.canvas.selection.min(axis=0), self.canvas.selection.max(axis=0))).clip((0, 0), self.img_area_limit) # アス比適応、上下限適応
+
+            # 矩形選択キャンセル
+            if self.event == self.cancel:
+             self.canvas.selection = None
+             self.canvas.drag_from = None
+
+            # 矩形選択完了
+            self.current_is_key = self.current_fullpath in list(self.trim_areas.keys()) # 記録済みの選択範囲があるか
+            if self.event == self.rectangle and self.canvas.selection is not None:
+          # 面積0の選択範囲はスキップ
+               if (self.canvas.selection[1] - self.canvas.selection[0]).min() >= 1:
+                  self.canvas.selection = (self.canvas.selection.astype(float)*self.image_scale).astype(int)
+               # すでに選択範囲がある場合はオフセットする
+                  if self.current_is_key:
+                      self.canvas.selection += self.trim_areas[self.current_fullpath][0]
+              # 選択範囲の記録
+                  self.trim_areas[self.current_fullpath] = self.canvas.selection
+                  
+          # 範囲を記録したらリセット
+               self.canvas.selection = None
+               self.canvas.drag_from = None
+            self.current_is_key = self.current_fullpath in list(self.trim_areas.keys())
+
+            # 選択範囲の登録解除
+            if self.event == self.rec_cancel and self.current_is_key:
+               self.trim_areas.pop(self.current_fullpath)
+               self.current_is_key = False
+
+            # 画像更新
+            if event in (self.TABLE_SOURCE, self.cancel,  self.rectangle):
+                filename = self.fullpath_list[values[self.TABLE_SOURCE][0]]
+                img = imread(filename)
+            # 登録済みの選択範囲があればトリミングする
+                if self.current_is_key:
+                    rect = self.trim_areas[self.current_fullpath]
+                    self.img_trim = img[rect[0, 1]:rect[1, 1], rect[0, 0]:rect[1, 0]]
+                else:
+                    self.img_trim = img.copy()
+                self.img_update = True
+            
+            # 選択範囲表示
+            if self.canvas.selection_figure is not None:
+              self.canvas.delete_figure(self.canvas.selection_figure)
+            if self.canvas.selection is not None:
+
+                self.canvas.selection_figure = self.canvas.draw_rectangle(
+                list((self.canvas.selection[0])), 
+                list(self.canvas.selection[1]), 
+                line_color='#FF0000', 
+               line_width=1
+               )
+     
+            if self.img_update or (self.event == self.resize and values[self.TABLE_SOURCE]): # 画像を更新するか判定
+               self.img_update,self.image_scale,self.img_area_limit = gazou_hyouji(self.img_update,self.canvas,self.img_trim,self.image_scale)
+
+        return self.canvas.drag_from,self.canvas.current,self.current_is_key,self.img_update, self.img_trim,self.current_fullpath, self.image_scale,self.img_area_limit,self.canvas.selection_figure,self.fullpath_list
+
+# 選択画像（img）を指定のキャンバスに収まるように表示する
+def gazou_hyouji(img_update,canvas,img,image_scale):
+        img_size = np.array(img.shape[1::-1], dtype=int) # shapeは縦、横の順なのでスライスは反転させる。更新予定の画像のサイズを入手
+        canvas_size = np.array(canvas.get_size())# 画像を表示するキャンバスのサイズを入手
+        if canvas.get_size() ==(1,1):# 画像を表示するキャンバスが無ければ、キャンバスAのサイズをそのまま使う
+            canvas_size = np.array(canvas_A.get_size())
+     # キャンバス比で長い方の割合をsceleとする
+        image_scale = (img_size / canvas_size).max()
+     # キャンバスに対して長い方を基準に縮小するので、画像が画面外にはみ出ない
+        img_resize = cv2.resize(img, tuple((img_size/image_scale).astype(int)))
+     # 画像端座標を取得
+        img_area_limit = ((np.array(img_resize.shape[1::-1])-1))
+     # キャンバスリセット→画像表示
+        canvas.erase()
+        canvas.draw_image_plus(img_resize)
+        img_update = False
+        return  img_update,image_scale,img_area_limit
+
+
+     
+def triming(imgA,imgB,x,y,alpha,beta):
+
+    x=0-x
+    y=0-y
+
+    #imgBの白色部分以外を赤色に変更
+      
+    # 指定色
+    target_color = (255, 255, 255)
+    # 変更後の色
+    change_color = (255, 255, 255)
+    # 色の変更
+    imgB  = np.where(imgB == target_color, change_color, (0, 0, 255))
+    imgB  = imgB .astype(np.uint8)
+
+
+    # カラー画像のときは、BGRからRGBへ変換する
+    
+    if imgB.shape[2] == 3:
+         imgB = cv2.cvtColor(imgB, cv2.COLOR_BGR2RGB)
+    elif imgB.shape[2] == 4:  # 透過
+         imgB = cv2.cvtColor(imgB, cv2.COLOR_BGRA2RGBA)
+
+       # NumPyからPillowへ変換
+    pil_imageB = Image.fromarray(imgB)
+    lower,right,cA=(imgA.shape)
+
+    # imgBのを指定の範囲で切り取り、範囲外は０（黒色）になる
+    im_crop = pil_imageB .crop((x, y, right+x,  lower+y))
+    #im_crop.save('トリミング結果.png', quality=95)
+
+    new_image = np.array(im_crop, dtype=np.uint8)
+    if new_image.ndim == 2:  # モノクロ
+        pass
+    elif new_image.shape[2] == 3:  # カラー
+        new_image = new_image[:, :, ::-1]
+    elif new_image.shape[2] == 4:  # 透過
+        new_image = new_image[:, :, [2, 1, 0, 3]]
+    
+    imgpaste_B =  new_image
+    imgpaste_B = imgpaste_B.astype(np.uint8)
+   
+    result=cv2.addWeighted(imgA, alpha, imgpaste_B, beta, 0.0)
+
+
+
+    return imgpaste_B,result
+
+
+
+
+
+# 1. レイアウト
+# 描画エリア
+canvas_A = sg.Graph(
+    (1920, 1920), # 大きめに作って画面外にはみ出させる
+    (0, 1920), # 表示サイズに合わせる
+    (1920, 0), 
+    background_color='#000000',
+    pad=(0, 0), 
+    key='CANVAS_A', 
+)
+
+canvas_B = sg.Graph(
+    (1920, 1920), # 大きめに作って画面外にはみ出させる
+    (0, 1920), # 表示サイズに合わせる
+    (1920, 0), 
+    background_color='#000000',
+    pad=(0, 0), 
+    key='CANVAS_B', 
+)
+canvas_AB = sg.Graph(
+    (1920, 1920), # 大きめに作って画面外にはみ出させる
+    (0, 1920), # 表示サイズに合わせる
+    (1920, 0), 
+    background_color='#000000',
+    pad=(0, 0), 
+    key='CANVAS_AB', 
+)
+# 画像リスト表示
+table_source_A = sg.Table(
+    [['画像名を表示する']], ['画像'], 
+    col_widths=[20], 
+    auto_size_columns=False, 
+    num_rows=100, # 長めに作ってはみ出させる
+    justification='left', 
+    select_mode=sg.TABLE_SELECT_MODE_BROWSE, 
+    background_color='#000000', 
+    pad=(0, 0), 
+    enable_events=True, 
+    key='TABLE_SOURCE_A', 
+)
+
+table_source_B = sg.Table(
+    [['画像名を表示する']], ['画像'], 
+    col_widths=[20], 
+    auto_size_columns=False, 
+    num_rows=100, # 長めに作ってはみ出させる
+    justification='left', 
+    select_mode=sg.TABLE_SELECT_MODE_BROWSE, 
+    background_color='#000000', 
+    pad=(0, 0), 
+    enable_events=True, 
+    key='TABLE_SOURCE_B', 
+)
+
+l2  = [
+            [sg.TabGroup([
+            [sg.Tab('画像A',[[ sg.Text("画像Aサイズ(GUIサイズ) : ")],
+            [canvas_A],
+
+            ]),
+             sg.Tab('画像B',[[ sg.Text("画像Bサイズ(GUIサイズ) : ")],
+             [canvas_B],
+ ]),
+            sg.Tab('画像A+B',[[ sg.Text("マスクA+Bサイズ(GUIサイズ) : ")],
+            [canvas_AB],
+ ]) ,
+
+         
+        ]], key="tab_group", enable_events=True)],
+          ]
+
+layout = [
+    [
+        sg.Menu(
+            [
+                [
+                    'ファイル(&F)', 
+                    [
+                        '開く (&O)::MENU_OPEN_FOLDER::', 
+                        '終了 (&X)::MENU_EXIT::', 
+                    ], 
+                ], 
+            ], 
+        ),
+    ], 
+    [sg.Button("ファイル選択（画像A）", size=(20,1), pad=(20,0), button_color=('white', 'blue'), font=('Arial',10),border_width=5)],
+    [
+        sg.Checkbox('縦横比固定', True, pad=(0, 0), key='ENABLE_ASPECT_A'), 
+        sg.Combo(['画面サイズ', '1:1', '3:2', '4:3', '16:9', '2:3', '3:4', '9:16', '指定比率'], '画面サイズ', size=(12, 1), readonly=True, enable_events=True, key='ASPECT_MODE_A'), 
+        sg.Text('', size=(2, 1), pad=(0, 0)), 
+        sg.Column(
+            [
+                [
+                    sg.Input('', size=(5, 1), pad=(0, 0), key='ASPECT_X_A'), 
+                    sg.Text(' : ', pad=(0, 0)), 
+                    sg.Input('', size=(5, 1), pad=(0, 0), key='ASPECT_Y_A'), 
+                ]
+            ], 
+            visible=False, 
+            key='COLUMN_ASPECT_A', 
+        )
+    ], 
+    [
+        table_source_A, 
+        
+    ],]
+    
+layout2=[
+    [sg.Button("ファイル選択（画像B）", size=(20,1), pad=(20,0), button_color=('white', 'red'), font=('Arial',10),border_width=5)],
+    [
+        sg.Checkbox('縦横比固定', True, pad=(0, 0), key='ENABLE_ASPECT_B'), 
+        sg.Combo(['画面サイズ', '1:1', '3:2', '4:3', '16:9', '2:3', '3:4', '9:16', '指定比率'], '画面サイズ', size=(12, 1), readonly=True, enable_events=True, key='ASPECT_MODE_B'), 
+        sg.Text('', size=(2, 1), pad=(0, 0)), 
+        sg.Column(
+            [
+                [
+                    sg.Input('', size=(5, 1), pad=(0, 0), key='ASPECT_X_B'), 
+                    sg.Text(' : ', pad=(0, 0)), 
+                    sg.Input('', size=(5, 1), pad=(0, 0), key='ASPECT_Y_B'), 
+                ]
+            ], 
+            visible=False, 
+            key='COLUMN_ASPECT_B', 
+        )
+    ], 
+    [
+        table_source_B, 
+        
+    ],]
+
+
+main_layout4=[[sg.Frame('Group 1',layout),sg.Frame('Group 2',layout2),sg.Frame('Group 3',l2)]]
+
+# 2. ウィンドウの生成
+window = sg.Window(
+    title='Window title',
+    layout=main_layout4, 
+    resizable=True, 
+    size=(800, 800), 
+    margins=(0, 0), 
+)
+window.finalize()
+##
+
+
+##画像A用の変数
+previous_canvas_size_A = None # 前フレームのキャンバスサイズ（ウィンドウサイズ変更検出用）
+fullpath_list_A =""
+aspect_A =""
+img_area_limit_A =""
+img_trim_A =""
+image_scale_A =""
+current_is_key_A =""
+current_fullpath_A =""
+canvas_A.drag_from  = None # ドラッグ開始位置
+canvas_A.current  = None # カーソル現在位置
+canvas_A.selection = None # 選択範囲
+canvas_A.selection_figure = None # 選択範囲の描画ID
+trim_areas_A  = {} # 選択範囲記憶用 key=ファイルパス, value=選択範囲
+img_update_A  = False # 画像の更新要否
+###
+
+##画像B用の変数
+previous_canvas_size_B= None # 前フレームのキャンバスサイズ（ウィンドウサイズ変更検出用）
+fullpath_list_B=""
+aspect_B=""
+img_area_limit_B=""
+img_trim_B=""
+image_scale_B=""
+current_is_key_B=""
+current_fullpath_B=""
+canvas_B.drag_from = None # ドラッグ開始位置
+canvas_B.current = None # カーソル現在位置
+canvas_B.selection = None # 選択範囲
+canvas_B.selection_figure = None # 選択範囲の描画ID
+trim_areas_B = {} # 選択範囲記憶用 key=ファイルパス, value=選択範囲
+img_update_B = False # 画像の更新要否
+###
+
+##画像A+B用の変数
+previous_canvas_size_AB= None # 前フレームのキャンバスサイズ（ウィンドウサイズ変更検出用）
+img_area_limit_AB=""
+image_scale_AB=""
+current_fullpath_AB=""
+img_update_AB = False 
+img_AB=None  #画像AとBを重ねた画像
+###
+
+#マウス操作に関数を繋げる
+canvas_AB.bind('<MouseWheel>', '__SCROLL') # スクロール操作を設定
+canvas_AB.bind('<ButtonPress-1>', '__LEFT_PRESS') # 左クリック操作を設定
+canvas_AB.bind('<Button1-Motion>', '__DRAG') # ドラッグで範囲選択
+canvas_AB.bind('<Button1-ButtonPress-3>', '__DRAG_CANCEL') # ドラッグ中止（ドラッグ中に右クリック）
+canvas_AB.bind('<ButtonRelease-1>', '__LEFT_RELEASE') # ドラッグ範囲確定
+canvas_AB.bind('<Double-ButtonPress-1>', '__DOUBLE_LEFT') # 選択範囲解除
+
+###画像移動用の変数
+canvas_AB.drag_from_X = None # ドラッグ開始位置(x)
+canvas_AB.drag_from_Y = None # ドラッグ開始位置(y)
+canvas_AB.current_X = None # カーソル現在位置(x)
+canvas_AB.current_Y = None # カーソル現在位置(y)
+canvas_AB.selection_X = None # 移動後のカーソル位置(x)
+canvas_AB.selection_Y = None # 移動後のカーソル位置(y)
+move_AB_x=None # 画像の移動量(x)
+move_AB_y=None # 画像の移動量(y)
+
+###
+
+
+
+
+# 3. GUI処理
+while True:
+    event, values = window.read(timeout=100, timeout_key='TIMEOUT')
+# 終了
+    if event is None or '::MENU_EXIT::' in event:
+        break
+    
+    # ウィンドウサイズ変更の検出
+    if event == 'TIMEOUT':
+        if previous_canvas_size_A != canvas_A.get_size():
+            event = 'CANVAS_RESIZE_A'
+        if previous_canvas_size_B != canvas_B.get_size():
+            event = 'CANVAS_RESIZE_B'
+        if previous_canvas_size_AB != canvas_B.get_size():
+            event = 'CANVAS_RESIZE_AB'
+        previous_canvas_size_A = canvas_A.get_size()
+        previous_canvas_size_B = canvas_B.get_size()
+        previous_canvas_size_AB = canvas_AB.get_size()
+        if event == 'TIMEOUT':
+            continue
+
+
+    
+    DRAG_zomm_A=DraggableImage(event,canvas_A,"ASPECT_MODE_A","ファイル選択（画像A）",fullpath_list_A,"CANVAS_A","TABLE_SOURCE_A","A",
+    canvas_A.drag_from,canvas_A.current,canvas_A.selection,img_area_limit_A,current_is_key_A,
+    current_fullpath_A,trim_areas_A,image_scale_A,img_update_A,img_trim_A,canvas_A.selection_figure)# クラスの呼び出し(画像A)
+
+    DRAG_zomm_B=DraggableImage(event,canvas_B,"ASPECT_MODE_B","ファイル選択（画像B）",fullpath_list_A,"CANVAS_B","TABLE_SOURCE_B","B",
+    canvas_B.drag_from,canvas_B.current,canvas_B.selection,img_area_limit_B,current_is_key_B,
+    current_fullpath_B,trim_areas_B,image_scale_B,img_update_B,img_trim_B,canvas_B.selection_figure)# クラスの呼び出し（画像B）
+
+
+    (canvas_A.drag_from,canvas_A.current,current_is_key_A,
+    img_update_A, img_trim_A,current_fullpath_A, 
+    image_scale_A,img_area_limit_A,canvas_A.selection_figure,fullpath_list_A)  =DRAG_zomm_A.IMAGE_ZOOM()# 画像拡大する奴のまとめ(A)
+
+    (canvas_B.drag_from,canvas_B.current,current_is_key_B,
+    img_update_B, img_trim_B,current_fullpath_B, 
+    image_scale_B,img_area_limit_B,canvas_B.selection_figure,fullpath_list_B)  =DRAG_zomm_B.IMAGE_ZOOM()# 画像拡大する奴のまとめ(B)
+
+
+    # 画像Aと画像Bの合成画像があれば表示する
+    if img_AB is not None :
+       img_update_AB,image_scale_AB,img_area_limit_AB=gazou_hyouji(img_update_AB,canvas_AB,img_AB,image_scale_AB)# 画像ABを表示する
+
+
+      # 画像Aと画像Bのがあるとき、変更されたときは新たな合成画像ABを作り表示する
+    if event in ('TABLE_SOURCE_A','TABLE_SOURCE_B'):
+      if current_fullpath_A != "" and current_fullpath_B != "":
+       
+       alpha = 0.5 # 1つ目の画像の重みの値
+       beta =  0.5  # 2つ目の画像の重みの値, 
+
+       # 画像を読み込む
+       src1 = imread(current_fullpath_A) # 1つ目の画像
+       src2 = imread(current_fullpath_B) # 2つ目の画像
+
+       imgpaste_B,img_AB=triming(src1,src2,0,0,alpha,beta)
+
+       img_update_AB=True
+       img_update_AB,image_scale_AB,img_area_limit_AB=gazou_hyouji(img_update_AB,canvas_AB,img_AB,image_scale_AB)# 画像ABを表示する
+
+       move_AB_x=0 # 保存していた移動量をリセット
+       move_AB_y=0
+       
+
+
+
+    if img_AB is not None :
+
+        
+
+
+        key1='CANVAS_AB'
+        key1=key1+'__LEFT_PRESS'
+
+
+        # 左クリックした座標を入手
+        if event == "CANVAS_AB__LEFT_PRESS":
+
+           
+           canvas_AB.drag_from_X = canvas_AB.user_bind_event.x
+           canvas_AB.drag_from_Y = canvas_AB.user_bind_event.y
+        
+         # ドラッグしている座標と左クリック時との差を入手
+        if event == 'CANVAS_AB__DRAG' :
+
+           canvas_AB.current_X = canvas_AB.user_bind_event.x
+           canvas_AB.current_Y = canvas_AB.user_bind_event.y
+           canvas_AB.selection_X = canvas_AB.current_X - canvas_AB.drag_from_X# 選択範囲
+           canvas_AB.selection_Y = canvas_AB.current_Y - canvas_AB.drag_from_Y
+   
+           # 画像移動してなければcanvas_AB.selectionをそのまま使う
+           if move_AB_x ==None or move_AB_y ==None:
+
+              move_AB_x=canvas_AB.selection_X # 移動する座標（ｘ）を保存
+              move_AB_y=canvas_AB.selection_Y # 移動する座標（y）を保存
+
+              move_x=int(canvas_AB.selection_X*image_scale_A) # 移動量をimage_scaleに合わせる
+              move_y=int(canvas_AB.selection_Y*image_scale_A) # 移動量をimage_scaleに合わせる
+
+              imgpaste_B,img_AB=triming(src1,src2,move_x,move_y,alpha,beta)#imgpaste_Bは合成に使う画像,img_ABは合成後の画像
+
+              img_update_AB=True
+
+           else:
+              start = time.time()
+              canvas_AB.selection_X = move_AB_x+canvas_AB.current_X - canvas_AB.drag_from_X# 選択範囲
+              canvas_AB.selection_Y = move_AB_y+canvas_AB.current_Y - canvas_AB.drag_from_Y
+              move_x=int(canvas_AB.selection_X*image_scale_A)
+              move_y=int(canvas_AB.selection_Y*image_scale_A)
+              imgpaste_B,img_AB=triming(src1,src2,move_x,move_y,alpha,beta)
+              img_update_AB=True
+              end = time.time()
+              print( "リサイズ時間：" + str(end - start))
+           
+        if event == 'CANVAS_AB__LEFT_RELEASE' :
+           move_AB_x=canvas_AB.selection_X
+           move_AB_y= canvas_AB.selection_Y
+        
+        if event == 'CANVAS_AB__DOUBLE_LEFT' :
+          imwrite( imgpaste_B,gazousyori_file+"/トリミング結果.png")
+          imwrite( img_AB,gazousyori_file+"/トリミング結果2.png")
+          sg.popup('画像を[トリミング結果.png]に保存しました')  
+
+        
+        
+        if img_update_AB or event == 'CANVAS_RESIZE_AB' and img_AB is not None:
+          img=img_AB
+          img_update_AB,image_scale_AB,img_area_limit_AB = gazou_hyouji(img_update_AB,canvas_AB,img_AB,image_scale_AB)
+        
+
+
+
+
+window.close()
+
+
